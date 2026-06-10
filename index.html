@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Curve Clash</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌀</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="screen-menu" class="screen">
+  <h1>CURVE CLASH</h1>
+  <p class="tagline">Steer your line. Dodge everyone. Last one alive wins.</p>
+  <input id="name-input" maxlength="12" placeholder="Your name" autocomplete="off">
+  <button id="btn-create" class="primary">Create Game</button>
+  <div class="join-row">
+    <input id="code-input" maxlength="4" placeholder="CODE" autocomplete="off">
+    <button id="btn-join">Join</button>
+  </div>
+  <p id="menu-status" class="status"></p>
+  <p class="help">Controls: ◀ ▶ arrow keys (or A / D), touch buttons on mobile</p>
+</div>
+
+<div id="screen-lobby" class="screen hidden">
+  <h2>Room <span id="lobby-code"></span></h2>
+  <button id="btn-copy">Copy invite link</button>
+  <ul id="player-list"></ul>
+  <button id="btn-start" class="primary hidden">Start Game</button>
+  <p id="lobby-status" class="status"></p>
+</div>
+
+<div id="screen-game" class="screen hidden">
+  <div id="hud"></div>
+  <div id="arena-wrap">
+    <canvas id="trail" width="800" height="800"></canvas>
+    <canvas id="heads" width="800" height="800"></canvas>
+    <div id="overlay" class="hidden">
+      <div id="overlay-main"></div>
+      <div id="overlay-sub"></div>
+    </div>
+  </div>
+  <div id="touch-controls">
+    <button id="touch-left" aria-label="turn left">⟲</button>
+    <button id="touch-right" aria-label="turn right">⟳</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
