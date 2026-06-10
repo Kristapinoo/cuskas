@@ -26,6 +26,49 @@
   <h2>Room <span id="lobby-code"></span></h2>
   <button id="btn-copy">Copy invite link</button>
   <ul id="player-list"></ul>
+  <div id="settings" class="hidden">
+    <div class="set-row">
+      <label for="set-mode">Mode</label>
+      <select id="set-mode">
+        <option value="score-auto">Score race (auto target)</option>
+        <option value="score">First to score</option>
+        <option value="rounds">Fixed rounds</option>
+      </select>
+      <input id="set-n" type="number" min="1" max="99" value="30">
+    </div>
+    <div class="set-row">
+      <label for="set-speed">Speed</label>
+      <select id="set-speed">
+        <option value="slow">Slow</option>
+        <option value="normal">Normal</option>
+        <option value="fast">Fast</option>
+      </select>
+    </div>
+    <div class="set-row">
+      <label for="set-gaps">Trail gaps</label>
+      <select id="set-gaps">
+        <option value="none">None</option>
+        <option value="rare">Rare</option>
+        <option value="normal">Normal</option>
+        <option value="frequent">Frequent</option>
+      </select>
+    </div>
+    <div class="set-row">
+      <label for="set-walls">Walls</label>
+      <select id="set-walls">
+        <option value="deadly">Deadly</option>
+        <option value="wrap">Wrap-around</option>
+      </select>
+    </div>
+    <div class="set-row">
+      <label for="set-pu">Power-ups</label>
+      <select id="set-pu">
+        <option value="on">On</option>
+        <option value="off">Off</option>
+      </select>
+    </div>
+  </div>
+  <p id="settings-summary"></p>
   <button id="btn-start" class="primary hidden">Start Game</button>
   <p id="lobby-status" class="status"></p>
 </div>
@@ -35,6 +78,7 @@
   <div id="arena-wrap">
     <canvas id="trail" width="800" height="800"></canvas>
     <canvas id="heads" width="800" height="800"></canvas>
+    <div id="toast"></div>
     <div id="overlay" class="hidden">
       <div id="overlay-main"></div>
       <div id="overlay-sub"></div>

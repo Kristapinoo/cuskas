@@ -24,6 +24,19 @@ browser; everyone else connects directly to them with a 4-letter room code.
 **Controls:** `←` / `→` arrow keys or `A` / `D` — on phones, hold the on-screen buttons.
 Players who join mid-match wait in the lobby and are dealt into the next round.
 
+### Host settings
+
+The host can tweak the match in the lobby (everyone else sees a live summary):
+
+- **Mode** — score race with an automatic target, *first to N points*, or a fixed
+  number of rounds (most points at the end wins).
+- **Speed** — slow / normal / fast.
+- **Trail gaps** — none, rare, normal, or frequent gaps in the trails.
+- **Walls** — deadly, or wrap-around (fly off one edge, appear on the opposite one).
+- **Power-ups** — orbs that spawn in the arena:
+  ⚡ speed boost (you) · 🐌 slow everyone else · 👻 ghost mode (no trail, pass
+  through lines) · 🧽 erase all trails · 🔀 reverse the others' controls.
+
 ## Deploying to GitHub Pages
 
 1. Create a new repository on GitHub and push these files:

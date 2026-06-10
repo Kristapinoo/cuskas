@@ -11,6 +11,16 @@ const MAX_PLAYERS = 8;
 const PREFIX = 'curve-clash-7gx-';  // namespaces our room IDs on the public PeerJS broker
 const COLORS = ['#ff4d6d', '#4dd2ff', '#ffe34d', '#6dff4d', '#ff9b4d', '#c44dff', '#4dffc4', '#f0f0f0'];
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const SPEED_OPTS = { slow: 85, normal: 115, fast: 150 };          // px/s
+const GAP_OPTS = { none: null, rare: [3.2, 6.0], normal: [1.8, 3.6], frequent: [0.9, 2.0] }; // s between gaps
+const PU_EMOJI = { fast: '⚡', slow: '🐌', ghost: '👻', erase: '🧽', reverse: '🔀' };
+const PU_LABEL = {
+  fast: '⚡ grabbed a speed boost!',
+  slow: '🐌 slowed everyone else!',
+  ghost: '👻 went ghost!',
+  erase: '🧽 erased all trails!',
+  reverse: '🔀 reversed the others!',
+};
 // STUN finds the direct path between homes; the free TURN relays below are a
 // fallback for strict routers that block direct peer-to-peer connections.
 const PEER_OPTS = {
@@ -61,13 +71,20 @@ let myIndex = -1;
 let phase = 'menu';     // menu | lobby | countdown | playing | roundend | over
 let roster = [];        // [{n: name, c: color, s: score, a: alive}] shared by everyone
 let lastPos = [];       // per-player last head position {x, y, a} for trail drawing
+let orbs = [];          // power-up orbs currently on the field [{id, x, y, k}]
+let toastTimer = null;
 
 /* ================= Host-only state ================= */
 let hPlayers = [];      // [{conn, isHost, name, color, score, dir, inGame}]
-let sim = null;         // {players: [{x, y, angle, alive, gapOn, gapT, pending: []}], running}
-let target = 10;        // points needed to win
+let sim = null;         // {players: [...], orbs, nextOrb, running}
+let match = null;       // active match config derived from settings
+let orbId = 0;
 let rafId = null, lastTs = 0, acc = 0;
 let cdToken = 0;        // invalidates pending countdown timers
+
+const SETTINGS_DEFAULTS = { mode: 'score-auto', n: 30, speed: 'normal', gaps: 'normal', walls: 'deadly', powerups: true };
+let settings = { ...SETTINGS_DEFAULTS };
+try { settings = { ...SETTINGS_DEFAULTS, ...JSON.parse(localStorage.getItem('cc-settings') || '{}') }; } catch (_) {}
 
 const rand = (a, b) => a + Math.random() * (b - a);
 
@@ -146,8 +163,8 @@ function cleanup() {
   cdToken++;
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   if (peer) { try { peer.destroy(); } catch (_) {} }
-  peer = null; hostConn = null; isHost = false; sim = null;
-  hPlayers = []; roster = []; lastPos = []; myIndex = -1;
+  peer = null; hostConn = null; isHost = false; sim = null; match = null;
+  hPlayers = []; roster = []; lastPos = []; orbs = []; myIndex = -1;
   phase = 'menu';
 }
 
@@ -163,6 +180,7 @@ function lobbyMsg(inProgress) {
     code: roomCode,
     roster: hPlayers.map(p => ({ n: p.name, c: p.color, s: p.score, a: false })),
     game: !!inProgress,
+    set: { ...settings },
   };
 }
 
@@ -230,8 +248,9 @@ function spawnAll(n) {
     const angle = Math.atan2(ARENA / 2 - y, ARENA / 2 - x) + rand(-0.8, 0.8);
     players.push({
       x, y, angle, alive: true,
-      gapOn: false, gapT: rand(1.8, 3.6),
-      pending: [],
+      gapOn: false, gapT: match.gapRange ? rand(match.gapRange[0], match.gapRange[1]) : 0,
+      pending: [], wrapFlag: false,
+      fastUntil: 0, slowUntil: 0, ghostUntil: 0, reverseUntil: 0,
     });
   }
   return players;
@@ -241,17 +260,30 @@ function rosterMsg() {
   return hPlayers.map(p => ({ n: p.name, c: p.color, s: p.score, a: true }));
 }
 
-function stateMsg() {
+function stateMsg(now) {
   return {
     t: 's',
     h: sim.players.map(p => [
-      +p.x.toFixed(1), +p.y.toFixed(1), p.gapOn ? 1 : 0, p.alive ? 1 : 0,
+      +p.x.toFixed(1), +p.y.toFixed(1),
+      (p.gapOn || now < p.ghostUntil || p.wrapFlag) ? 1 : 0,
+      p.alive ? 1 : 0,
     ]),
   };
 }
 
 function startMatch() {
-  target = Math.max(10, (hPlayers.length - 1) * 10);
+  const spd = SPEED_OPTS[settings.speed] || SPEED_OPTS.normal;
+  match = {
+    spd,
+    trn: TURN * spd / SPEED_OPTS.normal, // scale turn rate so the turning radius stays constant
+    gapRange: GAP_OPTS[settings.gaps] !== undefined ? GAP_OPTS[settings.gaps] : GAP_OPTS.normal,
+    walls: settings.walls,
+    powerups: !!settings.powerups,
+    mode: settings.mode === 'rounds' ? 'rounds' : 'score',
+    target: settings.mode === 'score' ? settings.n : Math.max(10, (hPlayers.length - 1) * 10),
+    totalRounds: settings.mode === 'rounds' ? settings.n : 0,
+    roundNum: 0,
+  };
   startRound();
 }
 
@@ -260,9 +292,13 @@ function startRound() {
   if (hPlayers.length === 0) return;
   hPlayers.forEach(p => { p.inGame = true; p.dir = 0; });
   hitCtx.clearRect(0, 0, ARENA, ARENA);
-  sim = { players: spawnAll(hPlayers.length), running: false };
-  broadcastAll({ t: 'roundStart', roster: rosterMsg(), target });
-  broadcastGame(stateMsg());
+  match.roundNum++;
+  sim = { players: spawnAll(hPlayers.length), orbs: [], nextOrb: 0, running: false };
+  const sub = match.mode === 'rounds'
+    ? `Round ${match.roundNum} / ${match.totalRounds}`
+    : `First to ${match.target} points`;
+  broadcastAll({ t: 'roundStart', roster: rosterMsg(), sub });
+  broadcastGame(stateMsg(performance.now()));
   const tok = ++cdToken;
   [[0, 3], [800, 2], [1600, 1]].forEach(([d, n]) =>
     setTimeout(() => { if (tok === cdToken) broadcastGame({ t: 'cd', n }); }, d));
@@ -270,6 +306,7 @@ function startRound() {
     if (tok !== cdToken) return;
     broadcastGame({ t: 'go' });
     sim.running = true;
+    sim.nextOrb = performance.now() + rand(3000, 5000);
     lastTs = performance.now();
     acc = 0;
     rafId = requestAnimationFrame(loop);
@@ -284,7 +321,12 @@ function loop(ts) {
   const now = performance.now();
   while (acc >= STEP) { stepSim(STEP, now); acc -= STEP; }
   commitPending(now);
-  broadcastGame(stateMsg());
+  if (match.powerups && now >= sim.nextOrb) {
+    if (sim.orbs.length < 3) spawnOrb();
+    sim.nextOrb = now + rand(3500, 6500);
+  }
+  broadcastGame(stateMsg(now));
+  sim.players.forEach(p => { p.wrapFlag = false; });
 
   const total = sim.players.length;
   const alive = sim.players.filter(p => p.alive).length;
@@ -296,23 +338,46 @@ function stepSim(dt, now) {
   for (let i = 0; i < sim.players.length; i++) {
     const p = sim.players[i];
     if (!p.alive) continue;
-    const dir = hPlayers[i] ? hPlayers[i].dir : 0;
-    p.angle += dir * TURN * dt;
+    let dir = hPlayers[i] ? hPlayers[i].dir : 0;
+    if (now < p.reverseUntil) dir = -dir;
+    const mult = (now < p.fastUntil ? 1.6 : 1) * (now < p.slowUntil ? 0.55 : 1);
+    p.angle += dir * match.trn * mult * dt;
 
-    p.gapT -= dt;
-    if (p.gapT <= 0) {
-      p.gapOn = !p.gapOn;
-      p.gapT = p.gapOn ? rand(0.22, 0.35) : rand(1.8, 3.6);
+    if (match.gapRange) {
+      p.gapT -= dt;
+      if (p.gapT <= 0) {
+        p.gapOn = !p.gapOn;
+        p.gapT = p.gapOn ? rand(0.22, 0.35) : rand(match.gapRange[0], match.gapRange[1]);
+      }
+    }
+    const ghost = now < p.ghostUntil;
+
+    let nx = p.x + Math.cos(p.angle) * match.spd * mult * dt;
+    let ny = p.y + Math.sin(p.angle) * match.spd * mult * dt;
+    let wrapped = false;
+    if (match.walls === 'wrap' && (nx < 0 || ny < 0 || nx > ARENA || ny > ARENA)) {
+      wrapped = true;
+      nx = (nx % ARENA + ARENA) % ARENA;
+      ny = (ny % ARENA + ARENA) % ARENA;
+    }
+    p.pending.push({ x1: p.x, y1: p.y, x2: nx, y2: ny, gap: p.gapOn || ghost || wrapped, ts: now });
+    p.x = nx; p.y = ny;
+    if (wrapped) p.wrapFlag = true;
+
+    if (match.powerups) {
+      for (let oi = sim.orbs.length - 1; oi >= 0; oi--) {
+        const o = sim.orbs[oi];
+        if (Math.hypot(p.x - o.x, p.y - o.y) < 16) {
+          sim.orbs.splice(oi, 1);
+          applyOrb(i, o, now);
+        }
+      }
     }
 
-    const nx = p.x + Math.cos(p.angle) * SPEED * dt;
-    const ny = p.y + Math.sin(p.angle) * SPEED * dt;
-    p.pending.push({ x1: p.x, y1: p.y, x2: nx, y2: ny, gap: p.gapOn, ts: now });
-    p.x = nx; p.y = ny;
-
     const r = LINE_W / 2 + 1.5;
-    let dead = p.x < r || p.y < r || p.x > ARENA - r || p.y > ARENA - r;
-    if (!dead) {
+    let dead = false;
+    if (match.walls !== 'wrap') dead = p.x < r || p.y < r || p.x > ARENA - r || p.y > ARENA - r;
+    if (!dead && !ghost) {
       for (const off of [0, -0.7, 0.7]) {
         const sx = (p.x + Math.cos(p.angle + off) * r) | 0;
         const sy = (p.y + Math.sin(p.angle + off) * r) | 0;
@@ -321,6 +386,38 @@ function stepSim(dt, now) {
     }
     if (dead) killPlayer(i);
   }
+}
+
+function spawnOrb() {
+  const kinds = Object.keys(PU_EMOJI);
+  for (let tries = 0; tries < 30; tries++) {
+    const x = Math.round(rand(60, ARENA - 60));
+    const y = Math.round(rand(60, ARENA - 60));
+    if (hitCtx.getImageData(x, y, 1, 1).data[3] > 0) continue;            // not on a trail
+    if (sim.players.some(p => p.alive && Math.hypot(p.x - x, p.y - y) < 90)) continue;
+    const orb = { id: ++orbId, x, y, k: kinds[Math.floor(Math.random() * kinds.length)] };
+    sim.orbs.push(orb);
+    broadcastGame({ t: 'pu', add: orb });
+    return;
+  }
+}
+
+function applyOrb(i, o, now) {
+  const p = sim.players[i];
+  if (o.k === 'fast') p.fastUntil = now + 4000;
+  else if (o.k === 'ghost') p.ghostUntil = now + 3000;
+  else if (o.k === 'slow' || o.k === 'reverse') {
+    sim.players.forEach((q, j) => {
+      if (j === i || !q.alive) return;
+      if (o.k === 'slow') q.slowUntil = now + 4000;
+      else q.reverseUntil = now + 4000;
+    });
+  } else if (o.k === 'erase') {
+    hitCtx.clearRect(0, 0, ARENA, ARENA);
+    sim.players.forEach(q => { q.pending = []; });
+    broadcastGame({ t: 'erase' });
+  }
+  broadcastGame({ t: 'pu', rm: o.id, who: i, k: o.k });
 }
 
 function commitPending(now) {
@@ -359,9 +456,17 @@ function endRound() {
   setTimeout(() => {
     if (!isHost || phase !== 'roundend') return;
     const best = Math.max(...hPlayers.map(p => p.score));
-    if (best >= target) {
-      const wi = hPlayers.findIndex(p => p.score === best);
-      broadcastAll({ t: 'over', m: `${hPlayers[wi].name} wins the game!` });
+    let overMsg = null;
+    if (match.mode === 'rounds') {
+      if (match.roundNum >= match.totalRounds) {
+        const winners = hPlayers.filter(p => p.score === best);
+        overMsg = winners.length > 1 ? "It's a tie!" : `${winners[0].name} wins the game!`;
+      }
+    } else if (best >= match.target) {
+      overMsg = `${hPlayers.find(p => p.score === best).name} wins the game!`;
+    }
+    if (overMsg) {
+      broadcastAll({ t: 'over', m: overMsg });
       setTimeout(() => {
         if (!isHost || phase !== 'over') return;
         hPlayers.forEach(p => { p.score = 0; p.inGame = false; });
@@ -387,17 +492,18 @@ function clientHandle(msg) {
       roomCode = msg.code;
       phase = 'lobby';
       showScreen('lobby');
-      renderLobby(msg.game);
+      renderLobby(msg.game, msg.set);
       break;
     case 'roundStart':
       roster = msg.roster;
       lastPos = [];
+      orbs = [];
       trailCtx.clearRect(0, 0, ARENA, ARENA);
       headCtx.clearRect(0, 0, ARENA, ARENA);
       phase = 'countdown';
       showScreen('game');
       renderHud();
-      showOverlay('Get ready…', `First to ${msg.target} points wins`);
+      showOverlay('Get ready…', msg.sub);
       break;
     case 'cd':
       showOverlay(String(msg.n), '');
@@ -424,7 +530,25 @@ function clientHandle(msg) {
       phase = 'over';
       showOverlay('🏆 ' + msg.m, 'Returning to lobby…');
       break;
+    case 'pu':
+      if (msg.add) orbs.push(msg.add);
+      if (msg.rm !== undefined) {
+        orbs = orbs.filter(o => o.id !== msg.rm);
+        if (roster[msg.who]) toast(roster[msg.who].n + ' ' + PU_LABEL[msg.k]);
+      }
+      break;
+    case 'erase':
+      trailCtx.clearRect(0, 0, ARENA, ARENA);
+      break;
   }
+}
+
+function toast(text) {
+  const el = $('toast');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
 }
 
 /* ================= Rendering ================= */
@@ -444,6 +568,19 @@ function applyState(h) {
     lastPos[i] = { x, y, a };
   }
   headCtx.clearRect(0, 0, ARENA, ARENA);
+  headCtx.font = '17px serif';
+  headCtx.textAlign = 'center';
+  headCtx.textBaseline = 'middle';
+  for (const o of orbs) {
+    headCtx.beginPath();
+    headCtx.arc(o.x, o.y, 14, 0, Math.PI * 2);
+    headCtx.fillStyle = 'rgba(255,255,255,.1)';
+    headCtx.fill();
+    headCtx.strokeStyle = 'rgba(255,255,255,.45)';
+    headCtx.lineWidth = 1.5;
+    headCtx.stroke();
+    headCtx.fillText(PU_EMOJI[o.k] || '?', o.x, o.y + 1);
+  }
   for (let i = 0; i < h.length; i++) {
     if (!roster[i]) continue;
     const [x, y, , a] = h[i];
@@ -479,7 +616,15 @@ function renderHud() {
   });
 }
 
-function renderLobby(gameInProgress) {
+function settingsSummary(s) {
+  const mode = s.mode === 'rounds' ? `Best of ${s.n} rounds`
+    : s.mode === 'score' ? `First to ${s.n} points`
+    : 'Score race (auto target)';
+  const speed = s.speed[0].toUpperCase() + s.speed.slice(1);
+  return `${mode} · ${speed} speed · ${s.gaps} gaps · ${s.walls === 'wrap' ? 'wrap-around' : 'deadly'} walls · power-ups ${s.powerups ? 'on' : 'off'}`;
+}
+
+function renderLobby(gameInProgress, set) {
   $('lobby-code').textContent = roomCode;
   const list = $('player-list');
   list.innerHTML = '';
@@ -494,6 +639,8 @@ function renderLobby(gameInProgress) {
     list.append(li);
   });
   $('btn-start').classList.toggle('hidden', !isHost);
+  $('settings').classList.toggle('hidden', !isHost);
+  $('settings-summary').textContent = isHost ? '' : settingsSummary(set || settings);
   const status = $('lobby-status');
   if (gameInProgress) status.textContent = 'Round in progress — you join the next one!';
   else if (isHost) status.textContent = roster.length < 2 ? 'Share the invite link — you need at least 2 players for a real game.' : '';
@@ -547,6 +694,36 @@ $('btn-copy').addEventListener('click', () => {
     setTimeout(() => { $('btn-copy').textContent = 'Copy invite link'; }, 1500);
   });
 });
+
+/* Settings controls (host only, editable in the lobby) */
+function initSettingsControls() {
+  $('set-mode').value = settings.mode;
+  $('set-n').value = settings.n;
+  $('set-speed').value = settings.speed;
+  $('set-gaps').value = settings.gaps;
+  $('set-walls').value = settings.walls;
+  $('set-pu').value = settings.powerups ? 'on' : 'off';
+  $('set-n').classList.toggle('hidden', settings.mode === 'score-auto');
+}
+
+function onSettingChange() {
+  if (!isHost || phase !== 'lobby') return;
+  const mode = $('set-mode').value;
+  if (mode !== settings.mode) $('set-n').value = mode === 'rounds' ? 10 : 30;
+  settings.mode = mode;
+  settings.n = Math.max(1, Math.min(99, parseInt($('set-n').value, 10) || SETTINGS_DEFAULTS.n));
+  $('set-n').value = settings.n;
+  settings.speed = $('set-speed').value;
+  settings.gaps = $('set-gaps').value;
+  settings.walls = $('set-walls').value;
+  settings.powerups = $('set-pu').value === 'on';
+  $('set-n').classList.toggle('hidden', settings.mode === 'score-auto');
+  localStorage.setItem('cc-settings', JSON.stringify(settings));
+  broadcastLobby(false); // clients see the updated summary live
+}
+['set-mode', 'set-n', 'set-speed', 'set-gaps', 'set-walls', 'set-pu']
+  .forEach(id => $(id).addEventListener('change', onSettingChange));
+initSettingsControls();
 
 $('name-input').value = localStorage.getItem('cc-name') || '';
 const roomParam = new URLSearchParams(location.search).get('room');
