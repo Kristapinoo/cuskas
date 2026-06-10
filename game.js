@@ -11,6 +11,24 @@ const MAX_PLAYERS = 8;
 const PREFIX = 'curve-clash-7gx-';  // namespaces our room IDs on the public PeerJS broker
 const COLORS = ['#ff4d6d', '#4dd2ff', '#ffe34d', '#6dff4d', '#ff9b4d', '#c44dff', '#4dffc4', '#f0f0f0'];
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+// STUN finds the direct path between homes; the free TURN relays below are a
+// fallback for strict routers that block direct peer-to-peer connections.
+const PEER_OPTS = {
+  config: {
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp',
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+      },
+    ],
+  },
+};
 
 /* ================= DOM ================= */
 const $ = id => document.getElementById(id);
@@ -74,7 +92,7 @@ function createGame() {
 
 function tryHost(attempt) {
   roomCode = genCode();
-  peer = new Peer(PREFIX + roomCode);
+  peer = new Peer(PREFIX + roomCode, PEER_OPTS);
   peer.on('open', () => {
     isHost = true;
     myIndex = 0;
@@ -104,7 +122,7 @@ function joinGame() {
   myName = getName();
   roomCode = code;
   setStatus('Connecting…');
-  peer = new Peer();
+  peer = new Peer(PEER_OPTS);
   peer.on('open', () => {
     hostConn = peer.connect(PREFIX + code, { reliable: true });
     hostConn.on('open', () => hostConn.send({ t: 'hello', n: myName }));

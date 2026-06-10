@@ -46,7 +46,7 @@ join with the code from the others.
 
 ## Notes
 
-- WebRTC connects directly between players; on rare very restrictive networks
-  (strict corporate NATs blocking peer-to-peer traffic) a player may fail to connect.
-- The free PeerJS cloud broker is used only for the initial handshake; all game
-  traffic flows peer-to-peer.
+- Players connect to each other over the internet from anywhere — different homes,
+  cities, or countries. Nobody needs to be on the same network.
+- The free PeerJS cloud broker is used only for the initial handshake; game traffic
+  flows peer-to-peer, with free public TURN relays as a fallback for strict routers.
